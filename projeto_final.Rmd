@@ -1,0 +1,521 @@
+---
+title: "Projeto Final R"
+author: "Rodrigo França, Rodrigo Tamamati, Eugenio Figueiredo e Lucas Nonato"
+date: "2023-03-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+```{r Pacotes}
+# Pacotes
+
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+# Grupo 08 -> Rodrigo França, Rodrigo Tamamati, Eugenio Figueiredo e Lucas Nonato
+library(dplyr)
+library(tidyverse)
+library(factoextra)
+library(GGally)
+library(ggrepel)
+library(scatterplot3d)
+library(tidymodels)
+library(doParallel)
+library(pROC)
+library(caret)
+
+```
+
+```{r Pre-Processamento}
+dados <- read.csv("marketing_campaign.csv", sep = ";")
+
+summary(dados)
+
+##Realizando o Tratamento da Base 
+# tem um cara com mais de 120 anos!!
+
+dim(dados)
+dados <- drop_na(dados)
+#2240 linhas na base
+#26 linhas removidas
+
+unique(dados$Marital_Status)
+#eliminar status absurd
+dados <- dados[dados$Marital_Status!="Absurd",]
+#2 linhas removidas
+
+dados <- dados[dados$Income!=666666,]
+dados <- dados[,-21:-29]
+
+dados <- dados %>% 
+  mutate(Single = ifelse(dados$Marital_Status != "Together" &
+                           dados$Marital_Status != "Married", 1, 0))
+
+#agrupamos os status em solteiros ou não
+
+sapply(dados, class)
+
+dados <- dados %>%
+  mutate(Tempo_base_dias = difftime(
+    as.Date("31/12/14", "%d/%m/%y"),
+    as.Date(dados$Dt_Customer, format = "%d/%m/%Y"),
+    units = "days"))
+
+dados$Tempo_base_dias <- as.numeric(dados$Tempo_base_dias)
+
+#Agrupamento Education
+dados$Education <- ifelse(dados$Education %in% c("Basic", "2n Cycle"), "0", 
+                          ifelse(dados$Education == "Graduation", "1", 
+                                 ifelse(dados$Education %in% c("Master", "PhD"), "2", 
+                                        dados$Education)))
+#idade do cliente
+dados$Age <- 2014 - dados$Year_Birth
+
+#tamanho da família
+dados$FamilySize <- dados$Kidhome + dados$Teenhome + ifelse(dados$Single == 0, 2, 1)
+
+
+# mensalizar gastos
+
+dados <- dados %>% mutate(Gastos_mensais = 
+                            (MntWines + MntFruits + MntMeatProducts + MntFishProducts + MntSweetProducts + MntGoldProds) / (Tempo_base_dias/30)
+)
+
+dados <- dados %>% mutate(MntWines_mensais = 
+                            (MntWines) / (Tempo_base_dias/30)
+)
+
+dados <- dados %>% mutate(MntFruits_mensais = 
+                            (MntFruits) / (Tempo_base_dias/30)
+)
+
+
+dados <- dados %>% mutate(MntMeatProducts_mensais = 
+                            (MntMeatProducts) / (Tempo_base_dias/30)
+)
+
+dados <- dados %>% mutate(MntFishProducts_mensais = 
+                            (MntFishProducts) / (Tempo_base_dias/30)
+)
+
+dados <- dados %>% mutate(MntSweetProducts_mensais = 
+                            (MntSweetProducts) / (Tempo_base_dias/30)
+)
+
+
+
+dados <- dados %>% mutate(MntGoldProds_mensais = 
+                            (MntGoldProds) / (Tempo_base_dias/30)
+)
+
+# mensalizar compras
+
+dados<-dados %>% 
+  mutate(
+    compras_mensais=(NumWebPurchases+NumCatalogPurchases+NumStorePurchases)/(Tempo_base_dias/30)
+  )
+
+dados<-dados %>% 
+  mutate(
+    NumWebPurchases_mensais=(NumWebPurchases)/(Tempo_base_dias/30)
+  )
+
+dados<-dados %>% 
+  mutate(
+    NumCatalogPurchases_mensais=(NumCatalogPurchases)/(Tempo_base_dias/30)
+  )
+
+
+dados<-dados %>% 
+  mutate(
+    NumStorePurchases_mensais=(NumStorePurchases)/(Tempo_base_dias/30)
+  )
+
+
+dados <- dados[, -c(1,2, 4,6,7, 8,10:15,16:19)]
+
+View(dados)
+
+```
+
+```{r Analise Exploratoria, fig.width=20, fig.height=20, fig.align='center'}
+
+# plot por pares de variaveis
+dados %>% 
+  ggpairs() +
+  scale_fill_manual(values = c("red", "blue", "green"))
+
+Income_medio <- aggregate(Income ~ Education, data = dados, FUN = mean)
+
+# renda por Educação
+grafico1 <- ggplot(Income_medio, aes(x = Education, y = Income      )) +
+  geom_col(aes(fill = Education)) +
+  ylab("Income") +
+  ggtitle("Education vs Income") +
+  labs(caption = "0 = Basic education, 1 = University, 2 = Graduate school") 
+
+plot(grafico1)
+
+
+# gasto por Educação
+gasto_medio <- aggregate(Gastos_mensais ~ Education , data = dados, FUN = mean)
+
+grafico2 <- ggplot(gasto_medio, aes(x = Education, y = Gastos_mensais      )) +
+  geom_col(aes(fill = Education)) +
+  ylab("Income") +
+  ggtitle("Education vs Income") +
+  labs(caption = "0 = Basic education, 1 = University, 2 = Graduate school") 
+
+plot(grafico2)
+
+
+#distribuicao de escolaridade
+grafico <- ggplot(dados, aes(x = Education)) +
+  geom_bar(stat = "count", aes(fill = ..count..)) +
+  ylab("Count") +
+  ggtitle("Education Distribution") +
+  labs(caption = "0 = Basic education, 1 = University, 2 = Graduate school")
+
+plot(grafico)
+
+#gastos por tamanho da familia
+gasto_medio2 <- aggregate(Gastos_mensais ~ FamilySize , data = dados, FUN = mean)
+grafico3 <- ggplot(gasto_medio2, aes(x = FamilySize, y = Gastos_mensais)) +
+  geom_col(aes(fill = FamilySize)) +
+  ylab("Gastos") +
+  ggtitle("FamilySize vs Gastos_Mensal") 
+
+plot(grafico3)
+
+#gastos vinho por tamanho da familia
+gasto_medio3 <- aggregate(MntWines_mensais ~ FamilySize , data = dados, FUN = mean)
+grafico4 <- ggplot(gasto_medio3, aes(x = FamilySize, y = MntWines_mensais)) +
+  geom_col(aes(fill = FamilySize)) +
+  ylab("Gastos") +
+  ggtitle("FamilySize vs Vinho_Mensal") 
+
+plot(grafico4)
+
+#gastos Frutas por tamanho da familia
+gasto_medio4 <- aggregate(MntFruits_mensais ~ FamilySize , data = dados, FUN = mean)
+grafico5 <- ggplot(gasto_medio4, aes(x = FamilySize, y = MntFruits_mensais)) +
+  geom_col(aes(fill = FamilySize)) +
+  ylab("Gastos") +
+  ggtitle("FamilySize vs Frutas_Mensal") 
+
+plot(grafico5)
+
+#gastos Peixe por tamanho da familia
+gasto_medio5 <- aggregate(MntFishProducts_mensais~ FamilySize , data = dados, FUN = mean)
+grafico6 <- ggplot(gasto_medio5, aes(x = FamilySize, y =MntFishProducts_mensais)) +
+  geom_col(aes(fill = FamilySize)) +
+  ylab("Gastos") +
+  ggtitle("FamilySize vs Fish_Mensal") 
+
+plot(grafico6)
+
+
+#gastos Carne por tamanho da familia
+gasto_medio6 <- aggregate(MntMeatProducts_mensais~ FamilySize , data = dados, FUN = mean)
+grafico7 <- ggplot(gasto_medio6, aes(x = FamilySize, y =MntMeatProducts_mensais)) +
+  geom_col(aes(fill = FamilySize)) +
+  ylab("Gastos") +
+  ggtitle("FamilySize vs Meat_Mensal") 
+
+plot(grafico7)
+
+#gastos Doces por tamanho da familia
+gasto_medio7 <- aggregate(MntSweetProducts_mensais~ FamilySize , data = dados, FUN = mean)
+grafico8 <- ggplot(gasto_medio7, aes(x = FamilySize, y =MntSweetProducts_mensais)) +
+  geom_col(aes(fill = FamilySize)) +
+  ylab("Gastos") +
+  ggtitle("FamilySize vs Sweet_Mensal") 
+
+plot(grafico8)
+
+
+#gastos Ouro por tamanho da familia
+gasto_medio8 <- aggregate(MntGoldProds_mensais~ FamilySize , data = dados, FUN = mean)
+grafico9 <- ggplot(gasto_medio8, aes(x = FamilySize, y =MntGoldProds_mensais)) +
+  geom_col(aes(fill = FamilySize)) +
+  ylab("Gastos") +
+  ggtitle("FamilySize vs Ouro_Mensal") 
+
+plot(grafico9)
+
+
+
+str(dados)
+
+
+grafico4<- ggplot(dados, aes(x = FamilySize)) +
+  geom_bar(stat = "count", aes(fill = ..count..)) +
+  ylab("Count") +
+  ggtitle("FamilySize Distribution")
+
+plot(grafico4)
+
+
+
+avg_gastos <- mean(dados$Gastos_mensais)
+
+grafico2222 <- ggplot(dados, aes(x = Gastos_mensais)) +
+  geom_histogram(aes(fill = ..count..), binwidth = 20) +
+  ylab("Count") +
+  ggtitle("Gastos Mensais Distribution") +
+  geom_vline(xintercept = avg_gastos, color = "red", linetype = "dashed")
+
+plot(grafico2222)
+
+
+avg_dist <- density(dados$Gastos_mensais)
+
+# Create a ggplot object for the distribution plot
+grafico1230 <- ggplot(data.frame(x = avg_dist$x, y = avg_dist$y), aes(x, y)) +
+  geom_line() +
+  ylab("Density") +
+  ggtitle("Average Distribution of Gastos Mensais")
+
+# Display the distribution plot
+plot(grafico1230)
+```
+
+```{r}
+dados <- dados[, -c(10:19)]
+dados$Education <- as.numeric(dados$Education)
+X <- scale(dados, 
+           center = TRUE, # centraliza os dados
+           scale = TRUE) # escalona os dados (pois estao em medidas diferentes)
+
+pca <- prcomp(X) # aplica o PCA
+
+pca$rotation <- -pca$rotation # troca o sinal das cargas
+pca$x <- -pca$x # troca o sinal dos scores
+
+Phi <- pca$rotation # matriz de cargas
+head(Phi)
+
+Z <- pca$x # matriz de scores
+head(Z)
+
+
+
+par(mar = c(5, 5, 4, 2) + 0.1)
+options(repr.plot.width = 8, repr.plot.height = 6)
+
+par(asp = 1.2)
+
+
+biplot(pca, scale = 0, cex = 1.2, xlab = "PC1", ylab = "PC2", col = c("red", "blue"), main = "PCA biplot")
+
+
+# biplot do factoextra
+
+# Plot PCA biplot with colors
+fviz_pca_biplot(pca, 
+                geom="point", 
+                repel = TRUE, 
+                xlab = "PC1", 
+                ylab = "PC2",
+                col.ind="cos2")
+
+
+# para visualizar as cargas graficamente
+fviz_pca_var(pca, repel = TRUE, geom = c("arrow", "text"))
+
+# o grafico abaixo mostra o percentual explicado da variancia de cada componente
+fviz_eig(pca, addlabels = TRUE) + 
+  labs(x = "Componente Principal",
+       y = "Percentual explicado da variÃ¢ncia")
+
+# abaixo obtemos a soma acumulada do percentual explicado da variancia
+(cumsum(pca$sdev^2) / sum(pca$sdev^2))
+
+
+
+```
+
+```{r Contribuiçao para as Componentes}
+pca %>% 
+  fviz_contrib(choice = "var", axes = 1, sort.val = "asc",
+               fill = "steelblue", color = "black") +
+  labs(x = "", title = "Componente Financeiro") +
+  coord_flip()
+
+
+pca %>% 
+  fviz_contrib(choice = "var", axes = 2, sort.val = "asc",
+               fill = "steelblue", color = "black") +
+  labs(x = "", title = "Tamanho da Familia") +
+  coord_flip()
+
+
+pca %>% 
+  fviz_contrib(choice = "var", axes = 3, sort.val = "asc",
+               fill = "steelblue", color = "black") +
+  labs(x = "", title = "Contribuicoes de Maturidade e Instrucao") +
+  coord_flip()
+
+
+scatterplot3d(pca$x[,1], pca$x[,2], pca$x[,3], 
+              xlab = "PC1", ylab = "PC2", zlab = "PC3", 
+              color = "blue", pch = 16)
+```
+
+
+
+```{r Questão-01}
+
+#Kmeans
+y <- dados %>% scale()  
+set.seed(123)
+
+tibble(k = 1:8) %>% 
+  mutate(w = map_dbl(k, ~ kmeans(y, centers = .x,
+                                 nstart = 100,iter.max = 25)$tot.withinss)) %>% 
+  ggplot(aes(k, w)) + 
+  geom_point() + 
+  geom_line()
+
+kameans <- kmeans(y, centers = 4, nstart = 10)
+
+
+# Visualize the clusters in a 3D plot
+fviz_cluster(kameans, data = y, geom = "point", 
+             palette = c("#00AFBB", "#E7B800", "#FC4E07", "#6f03fc"), 
+             ellipse.type = "norm",
+             ggtheme = theme_classic(),
+             labelsize = 5, repel = TRUE)
+
+
+
+```
+
+```{r Questão-02}
+##HC olhando para as linhas
+D <- proxy::dist(dados, by_rows = TRUE, method = "Euclidean")
+hc <- hclust(as.dist(D), method = "ave")
+plot(hc)
+
+nclusters <- 3
+a <- cutree(hc, k = nclusters)
+
+dados <- data.frame(dados,kameans$cluster, cutree(hc, k = 3))
+colnames(dados) <- c(colnames(dados)[1:9],"kmeans","HC")
+```
+
+```{r}
+
+#processamento
+dados2 <- dados
+dados2$FamilySize <- as.factor(dados2$FamilySize)
+
+set.seed(123)
+split <- initial_split(dados2, prop = 0.7, strata = "FamilySize")
+treinamento <- training(split)
+teste <- testing(split)
+
+familia <- recipe(FamilySize ~ ., dados2)
+familia_prep <- prep(familia)
+treinamento_proc <- bake(familia_prep, new_data = NULL)
+teste_proc <- bake(familia_prep, new_data=teste)
+
+#Logit Multinomial
+fit_glm <- multinom_reg(penalty = 0) %>% # define um modelo de regressao logistica
+  set_engine("glmnet") %>% # define a engine do modelo
+  set_mode("classification") %>% # define que e'  problema de classificacao
+  fit(FamilySize ~ ., treinamento_proc) # executa o modelo e estima os parametros
+
+fit_models <- data.frame(teste_proc$FamilySize, predict(fit_glm, teste_proc))
+
+# Arvore
+arvore <- decision_tree(tree_depth = tune(), # define o modelo arvore de decicao e o parametros a serem tunados
+                        cost_complexity = tune()) %>% 
+  set_engine("rpart") %>% # define qual função sera usada
+  set_mode("classification") # define que e'  problema de classificacao
+cv_split <- vfold_cv(treinamento, v = 10, strata = "FamilySize")
+doParallel::registerDoParallel() # paraleliza os proximos comandos
+
+arvore_tune <- tune_grid(arvore, # especificacao do modelo
+                         familia, # a receita a ser aplicada a cada lote
+                         resamples = cv_split, # os lotes da validacao cruzada
+                         grid = 30, # quantas combinacoes de parametros vamos considerar
+                         metrics = metric_set(roc_auc, accuracy)) # metricas consideradas
+
+arvore_tune %>% 
+  collect_metrics() # obtem as metricas calculadas
+
+(best <- arvore_tune %>% 
+    select_best("roc_auc")) # seleciona a melhor combinacao de hiperparametros
+
+fit_arvore <- finalize_model(arvore, parameters = best) %>% # informa os valores de hiperparametros a serem considerados
+  fit(FamilySize ~ ., data = treinamento_proc) # executa o modelo com os valores de hiperparametros definidos acima
+
+fit_models <- data.frame(fit_models, predict(fit_arvore, teste_proc))
+
+# floresta ----------------------------------------------------------------
+rf2 <- rand_forest(mtry = tune(), # definicao da floresta aleatoria 
+                   trees = tune(), # todos argumentos com tune() serao tunados a seguir  
+                   min_n = tune()) %>% 
+  set_engine("ranger") %>% # define qual função sera usada
+  set_mode("classification") # define que e'  problema de classificacao
+
+registerDoParallel() # pararaleliza o processo
+
+# para tunar os parametros
+rf_grid <- tune_grid(rf2, # especificacao do modelo
+                     familia, # a receita a ser aplicada a cada lote
+                     resamples = cv_split, # os lotes da validacao cruzada
+                     grid = 30, # quantas combinacoes de parametros vamos considerar
+                     metrics = metric_set(roc_auc, accuracy)) # metricas consideradas
+
+autoplot(rf_grid) # plota os resultados
+
+rf_grid %>% 
+  collect_metrics() 
+
+rf_grid %>% 
+  select_best("roc_auc") # seleciona a melhor combinacao de hiperparametros
+
+best <- rf_grid %>% 
+  select_best("roc_auc") # salva o melhor modelo na variavel best
+
+rf_fit2 <- finalize_model(rf2, parameters = best) %>% # informa os valores de hiperparametros a serem considerados
+  fit(FamilySize ~ ., treinamento_proc) # executa o modelo com os valores de hiperparametros definidos acima
+
+fit_models <- data.frame(fit_models, predict(rf_fit2, teste_proc))
+colnames(fit_models) <- c("observado", "Previsto_LogitMult", "previsto_Arv", "previsto_Flo")
+
+mean(fit_models$Previsto_LogitMult==fit_models$observado)
+mean(fit_models$previsto_Arv==fit_models$observado)
+mean(fit_models$previsto_Flo==fit_models$observado)
+```
+
+```{r}
+#Confusion Matrix
+conf_LogitMult <- confusionMatrix(fit_models$observado, fit_models$Previsto_LogitMult)
+conf_arv <- confusionMatrix(fit_models$observado, fit_models$previsto_Arv)
+conf_flo <- confusionMatrix(fit_models$observado, fit_models$previsto_Flo)
+
+fit_models2 <- fit_models
+fit_models2$observado <- as.numeric(fit_models2$observado)
+fit_models2$Previsto_LogitMult <- as.numeric(fit_models2$Previsto_LogitMult)
+fit_models2$previsto_Arv <- as.numeric(fit_models2$previsto_Arv)
+fit_models2$previsto_Flo <- as.numeric(fit_models2$previsto_Flo)
+
+#ROC Multinomial
+roc_LogitMult <- multiclass.roc(fit_models2$observado, fit_models2$Previsto_LogitMult, levels = c(1,2,3,4,5), quiet = TRUE)
+roc_arv <- multiclass.roc(fit_models2$observado, fit_models2$previsto_Arv, levels = c(1,2,3,4,5), quiet = TRUE)
+roc_flo <- multiclass.roc(fit_models2$observado, fit_models2$previsto_Flo, levels = c(1,2,3,4,5), quiet = TRUE)
+
+auc_accur <- data.frame("AUC" = c(round(roc_LogitMult$auc,3), round(roc_arv$auc,3), round(roc_flo$auc,3)),
+                        "Accuracy" = c(round(conf_LogitMult$overall,3)[1],
+                                       round(conf_arv$overall,3)[1],
+                                       round(conf_flo$overall,3)[1]))
+row.names(auc_accur) <- c("Logit Multinomial", "Arvore", "Floresta")
+print(auc_accur)
+
+
+```
